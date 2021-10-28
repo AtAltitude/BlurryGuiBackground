@@ -1,0 +1,188 @@
+--[[
+	Copyright (C) 2021, AtAltitude, Distributed under MIT License.
+	Profile: https://www.roblox.com/users/1094977/profile
+	
+	Blurred GUI backgrounds implementation
+	
+	Functions:
+		BlurredGuiObj = BlurredGui.new(GuiObject frame, string shape)
+			Creates a new BlurredGui object that adorns itself to the given GuiObject. Shape determines the shape of the GUI, and currently has
+			two valid values:
+			- "Rectangle": rectangular GUIs
+			- "Oval": oval or round GUIs
+	
+	Fields:
+		BlurredGuiObj.Frame          - the frame the BlurredGuiObj is adorned to
+		BlurredGuiObj.Part           - the part used for this BlurredGuiObj
+		BlurredGuiObj.Mesh           - the mesh used for this BlurredGuiObj
+		BlurredGuiObj.IgnoreGuiInset - whether the BlurredGuiObj ignores Roblox's GUI inset
+	
+	Methods:
+		BlurredGuiObj:Update()
+			Updates this specific BlurredGuiObj. Should be bound to RenderStep with a priority higher than 200.
+		
+		BlurredGuiObj:Destroy()
+			Destroys the BlurredGuiObj.
+--]]
+
+--Service dependencies
+local Lighting          = game:GetService("Lighting")
+
+--Constants
+local BLUR_SIZE         = Vector2.new(10, 10) --The size of the "border" around the part that is blurred
+local PART_SIZE         = 0.01                --Size of the part along all 3 axes, must be nonzero
+local PART_TRANSPARENCY = 1 - 1e-7            --Practically invisible. Narrowly misses the threshold at which Roblox occludes the part from rendering
+
+--Instance setup
+local BLUR_OBJ          = Instance.new("DepthOfFieldEffect")
+BLUR_OBJ.FarIntensity   = 0
+BLUR_OBJ.NearIntensity  = 1
+BLUR_OBJ.FocusDistance  = 0.2
+BLUR_OBJ.InFocusRadius  = 0
+BLUR_OBJ.Parent         = Lighting
+
+--Utility function to calculate a ray-plane intersect
+function rayPlaneIntersect(planePos, planeNormal, rayOrigin, rayDirection)
+	--Internal notation
+	local n = planeNormal
+	local d = rayDirection
+	local v = rayOrigin - planePos
+
+	--Calculate relative distance to the plane (distance = a*|rayDirection|)
+	local num = n.x*v.x + n.y*v.y + n.z*v.z
+	local den = n.x*d.x + n.y*d.y + n.z*d.z
+	local a = -num / den
+
+	--Calculate position
+	return rayOrigin + a * rayDirection, a
+end
+
+--Implement class
+local BlurredGui        = {}
+BlurredGui.__index      = BlurredGui
+
+--Constructor
+function BlurredGui.new(frame, shape)
+	--Set up part
+	local blurPart        = Instance.new("Part")
+	blurPart.Size         = Vector3.new(1, 1, 1) * 0.01
+	blurPart.Anchored     = true
+	blurPart.CanCollide   = false
+	blurPart.CanTouch     = false
+	blurPart.Material     = Enum.Material.Glass
+	blurPart.Transparency = PART_TRANSPARENCY
+	blurPart.Parent       = workspace.CurrentCamera
+	
+	--Set up mesh
+	local mesh
+	if (shape == "Rectangle") then
+		mesh        = Instance.new("BlockMesh")
+		mesh.Parent = blurPart
+	elseif (shape == "Oval") then
+		mesh          = Instance.new("SpecialMesh")
+		mesh.MeshType = Enum.MeshType.Sphere
+		mesh.Parent   = blurPart
+	end
+	
+	--Check if we should ignore GUI inset
+	local ignoreInset = false
+	local currentObj  = frame
+	
+	--Move up the hierarchy until we find a ScreenGui, or hit nil
+	while true do
+		currentObj = currentObj.Parent
+		
+		if (currentObj and currentObj:IsA("ScreenGui")) then
+			ignoreInset = currentObj.IgnoreGuiInset
+			break
+		elseif (currentObj == nil) then
+			break
+		end
+	end
+	
+	--Create object
+	local new = setmetatable({
+		Frame          = frame;
+		Part           = blurPart;
+		Mesh           = mesh;
+		IgnoreGuiInset = ignoreInset;
+	}, BlurredGui)
+	
+	--Update
+	new:Update()
+	
+	--Return new object
+	return new
+end
+
+--Method to update the blurry background
+function BlurredGui:Update()
+	--If the GUI is not visible, hide this part
+	if (not self.Frame.Visible) then
+		self.Part.Transparency = 1
+		return
+	end
+	
+	--Get important instances
+	local camera = workspace.CurrentCamera
+	local frame  = self.Frame
+	local part   = self.Part
+	local mesh   = self.Mesh
+	
+	--Part should be visible and at the camera
+	part.Transparency = PART_TRANSPARENCY
+	part.CFrame       = camera.CFrame
+	
+	--Get GUI corners in screen space
+	local corner0 = frame.AbsolutePosition + BLUR_SIZE
+	local corner1 = corner0 + frame.AbsoluteSize - BLUR_SIZE*2
+
+	--Get screen rays
+	--We want to account for the GUI inset, so we use ScreenPointToRay
+	--Alternatively, to not consider inset, use ViewportPointToRay
+	local ray0, ray1
+	
+	if (self.IgnoreGuiInset) then
+		ray0 = camera:ViewportPointToRay(corner0.X, corner0.Y, 1)
+		ray1 = camera:ViewportPointToRay(corner1.X, corner1.Y, 1)
+	else
+		ray0 = camera:ScreenPointToRay(corner0.X, corner0.Y, 1)
+		ray1 = camera:ScreenPointToRay(corner1.X, corner1.Y, 1)
+	end
+	
+	--Calculate viable depth
+	local dist = 2
+	if (camera.CameraSubject and camera.CameraSubject:IsA("BasePart")) then
+		dist = (camera.CFrame.Position - camera.CameraSubject.Position).Magnitude * 0.05
+		dist = math.clamp(dist, 0.05, 60)
+	end
+
+	--Get 3D positions
+	local planeOrigin = camera.CFrame.Position + camera.CFrame.LookVector * (dist - camera.NearPlaneZ)
+	local planeNormal = camera.CFrame.LookVector
+	local pos0 = rayPlaneIntersect(planeOrigin, planeNormal, ray0.Origin, ray0.Direction)
+	local pos1 = rayPlaneIntersect(planeOrigin, planeNormal, ray1.Origin, ray1.Direction)
+
+	--Convert to camera space
+	local pos0 = camera.CFrame:PointToObjectSpace(pos0)
+	local pos1 = camera.CFrame:PointToObjectSpace(pos1)
+
+	--Get difference and center position
+	local size   = pos1 - pos0
+	local center = (pos0 + pos1)/2
+
+	--Move mesh
+	mesh.Offset = center
+	mesh.Scale  = size / PART_SIZE
+	
+	--Update blur
+	BLUR_OBJ.FocusDistance = dist*5 - camera.NearPlaneZ
+end
+
+--Method to destroy the object
+function BlurredGui:Destroy()
+	self.Part:Destroy()
+end
+
+--Expose class
+return BlurredGui
