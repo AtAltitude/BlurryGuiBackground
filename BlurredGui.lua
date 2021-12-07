@@ -1,6 +1,7 @@
 --[[
 	Copyright (C) 2021, AtAltitude, Distributed under MIT License.
-	Profile: https://www.roblox.com/users/1094977/profile
+	Roblox Profile: https://www.roblox.com/users/1094977/profile
+	Website: https://www.ataltitude.me/
 	
 	Blurred GUI backgrounds implementation
 	
